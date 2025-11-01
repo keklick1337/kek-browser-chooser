@@ -1,0 +1,235 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# Browser profile directories (can be overridden via environment variables)
+FIREFOX_PROFILES_DIR="${FIREFOX_PROFILES_DIR:-${HOME}/.mozilla/firefox}"
+CHROME_CONFIG_DIR="${CHROME_CONFIG_DIR:-${HOME}/.config/google-chrome}"
+CHROMIUM_CONFIG_DIR="${CHROMIUM_CONFIG_DIR:-${HOME}/.config/chromium}"
+
+get_browsers() {
+    local candidates=(
+        google-chrome-stable google-chrome
+        chromium konqueror
+    )
+    local found=()
+    for b in "${candidates[@]}"; do
+        command -v "$b" &>/dev/null && found+=("$b")
+    done
+    echo "${found[@]}"
+}
+
+get_firefox_profiles() {
+    local ini="${FIREFOX_PROFILES_DIR}/profiles.ini"
+    [[ -f "$ini" ]] || return 1
+
+    awk -F= '
+        /^\[Profile/ {i++}
+        /^Name=/      {name[i]=$2}
+        /^Path=/      {path[i]=$2}
+        /^IsRelative=/{rel[i]=$2}
+        /^Default=/   {def[i]=$2}
+        END {
+            for (j=0; j<=i; j++) {
+                if (name[j]!="") {
+                    d = (def[j]==1) ? 1 : 0;
+                    printf "%s\t%d\n", name[j], d
+                }
+            }
+        }
+    ' "$ini"
+}
+
+get_chrome_profiles() {
+    local state_file="${CHROME_CONFIG_DIR}/Local State"
+    [[ -f "$state_file" ]] || return 1
+    
+    # Extract profiles from Local State (JSON file)
+    jq -r '.profile.info_cache | to_entries[] | "\(.key)\t\(.value.name)\t0"' "$state_file" 2>/dev/null || return 1
+}
+
+get_chromium_profiles() {
+    local state_file="${CHROMIUM_CONFIG_DIR}/Local State"
+    [[ -f "$state_file" ]] || return 1
+    
+    # Extract profiles from Local State (JSON file)
+    jq -r '.profile.info_cache | to_entries[] | "\(.key)\t\(.value.name)\t0"' "$state_file" 2>/dev/null || return 1
+}
+
+show_dialog() {
+    local title="$1"
+    local text="$2"
+    shift 2
+    local options=("$@")
+    
+    # Try kdialog first (KDE)
+    if command -v kdialog &>/dev/null; then
+        kdialog --title "$title" --radiolist "$text" "${options[@]}" 2>/dev/null && return 0
+    fi
+    
+    # Try zenity (GNOME/GTK)
+    if command -v zenity &>/dev/null; then
+        local zenity_opts=()
+        for ((i=0; i<${#options[@]}; i+=3)); do
+            local key="${options[i]}"
+            local label="${options[i+1]}"
+            local state="${options[i+2]}"
+            zenity_opts+=("$state" "$key" "$label")
+        done
+        zenity --title="$title" --list --radiolist --text="$text" \
+               --column="" --column="ID" --column="Browser" --hide-column=2 \
+               --print-column=2 "${zenity_opts[@]}" 2>/dev/null && return 0
+    fi
+    
+    # Try rofi (standalone)
+    if command -v rofi &>/dev/null; then
+        local rofi_opts=()
+        local rofi_ids=()
+        for ((i=0; i<${#options[@]}; i+=3)); do
+            local key="${options[i]}"
+            local label="${options[i+1]}"
+            rofi_opts+=("$label")
+            rofi_ids+=("$key")
+        done
+        local selected
+        selected=$(printf '%s\n' "${rofi_opts[@]}" | rofi -dmenu -p "$text" -theme-str 'window {width: 40%;}' 2>/dev/null)
+        if [[ -n "$selected" ]]; then
+            for ((i=0; i<${#rofi_opts[@]}; i++)); do
+                if [[ "${rofi_opts[i]}" == "$selected" ]]; then
+                    echo "${rofi_ids[i]}"
+                    return 0
+                fi
+            done
+        fi
+    fi
+    
+    return 1
+}
+
+show_error() {
+    local title="$1"
+    local text="$2"
+    
+    if command -v kdialog &>/dev/null; then
+        kdialog --title "$title" --error "$text"
+    elif command -v zenity &>/dev/null; then
+        zenity --title="$title" --error --text="$text"
+    elif command -v rofi &>/dev/null; then
+        rofi -e "$text"
+    else
+        echo "ERROR: $text" >&2
+    fi
+}
+
+choose_browser_profile() {
+    local options=()
+    
+    # Firefox profiles
+    if command -v firefox &>/dev/null || command -v firefox-esr &>/dev/null; then
+        local ff_cmd="firefox"
+        command -v firefox &>/dev/null || ff_cmd="firefox-esr"
+        
+        local profiles
+        mapfile -t profiles < <(get_firefox_profiles 2>/dev/null || true)
+        
+        if [[ ${#profiles[@]} -gt 0 ]]; then
+            for profile_line in "${profiles[@]}"; do
+                IFS=$'\t' read -r pname is_def <<< "$profile_line"
+                local state="off"
+                [[ "$is_def" == "1" ]] && state="on"
+                options+=("firefox|$pname|$ff_cmd" "Firefox — $pname" "$state")
+            done
+        else
+            options+=("firefox||$ff_cmd" "Firefox" "off")
+        fi
+    fi
+    
+    # Google Chrome profiles
+    if command -v google-chrome-stable &>/dev/null || command -v google-chrome &>/dev/null; then
+        local chrome_cmd="google-chrome-stable"
+        command -v google-chrome-stable &>/dev/null || chrome_cmd="google-chrome"
+        
+        local profiles
+        mapfile -t profiles < <(get_chrome_profiles 2>/dev/null || true)
+        
+        if [[ ${#profiles[@]} -gt 0 ]]; then
+            for profile_line in "${profiles[@]}"; do
+                IFS=$'\t' read -r profile_dir pname is_def <<< "$profile_line"
+                options+=("chrome|$profile_dir|$chrome_cmd" "Chrome — $pname" "off")
+            done
+        else
+            options+=("chrome||$chrome_cmd" "Chrome" "off")
+        fi
+    fi
+    
+    # Chromium profiles
+    if command -v chromium &>/dev/null; then
+        local profiles
+        mapfile -t profiles < <(get_chromium_profiles 2>/dev/null || true)
+        
+        if [[ ${#profiles[@]} -gt 0 ]]; then
+            for profile_line in "${profiles[@]}"; do
+                IFS=$'\t' read -r profile_dir pname is_def <<< "$profile_line"
+                options+=("chromium|$profile_dir|chromium" "Chromium — $pname" "off")
+            done
+        else
+            options+=("chromium||chromium" "Chromium" "off")
+        fi
+    fi
+    
+    # Other browsers
+    local other_browsers
+    other_browsers=($(get_browsers))
+    for b in "${other_browsers[@]}"; do
+        # Skip already processed browsers
+        [[ "$b" == "google-chrome-stable" || "$b" == "google-chrome" || "$b" == "chromium" ]] && continue
+        options+=("$b||$b" "$b" "off")
+    done
+    
+    [[ ${#options[@]} -eq 0 ]] && return 1
+    
+    local choice
+    choice=$(show_dialog "Browser Selector" "Choose browser and profile:" "${options[@]}")
+    [[ -z "$choice" ]] && return 1
+    
+    echo "$choice"
+}
+
+open_target() {
+    local selection="$1"
+    local target="$2"
+    
+    IFS='|' read -r browser_type profile browser_cmd <<< "$selection"
+    
+    if [[ "$browser_type" == "firefox" ]]; then
+        if [[ -n "$profile" ]]; then
+            exec "$browser_cmd" -P "$profile" "$target"
+        else
+            exec "$browser_cmd" "$target"
+        fi
+    elif [[ "$browser_type" == "chrome" || "$browser_type" == "chromium" ]]; then
+        if [[ -n "$profile" ]]; then
+            exec "$browser_cmd" --profile-directory="$profile" "$target"
+        else
+            exec "$browser_cmd" "$target"
+        fi
+    else
+        exec "$browser_cmd" "$target"
+    fi
+}
+
+# --- main ---
+
+target="${1:-}"
+[[ -z "$target" ]] && exit 0
+
+selection=$(choose_browser_profile)
+if [[ -z "$selection" ]]; then
+    show_error "Browser Selector" "No browser selected. Using system xdg-open."
+    /usr/bin/xdg-open.original "$@" &
+    disown
+    exit 0
+fi
+
+open_target "$selection" "$target"
+exit 0
