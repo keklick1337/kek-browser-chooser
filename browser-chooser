@@ -190,9 +190,15 @@ choose_browser_profile() {
     
     local choice
     choice=$(show_dialog "Browser Selector" "Choose browser and profile:" "${options[@]}")
-    [[ -z "$choice" ]] && return 1
+    local dialog_exit=$?
+    
+    # If dialog was cancelled (closed with X or Cancel button)
+    if [[ $dialog_exit -ne 0 ]] || [[ -z "$choice" ]]; then
+        return 1
+    fi
     
     echo "$choice"
+    return 0
 }
 
 open_target() {
@@ -225,7 +231,7 @@ target="${1:-}"
 # If no arguments, just launch the browser selector and open browser without URL
 if [[ -z "$target" ]]; then
     selection=$(choose_browser_profile)
-    if [[ -z "$selection" ]]; then
+    if [[ $? -ne 0 ]] || [[ -z "$selection" ]]; then
         exit 0
     fi
     
@@ -250,11 +256,13 @@ if [[ -z "$target" ]]; then
 fi
 
 selection=$(choose_browser_profile)
-if [[ -z "$selection" ]]; then
-    show_error "Browser Selector" "No browser selected. Using system xdg-open."
-    /usr/bin/xdg-open.original "$@" &
-    disown
-    exit 0
+if [[ $? -ne 0 ]] || [[ -z "$selection" ]]; then
+    # Dialog was cancelled, try fallback to original xdg-open
+    if [[ -x /usr/bin/xdg-open.original ]]; then
+        exec /usr/bin/xdg-open.original "$@"
+    else
+        exit 1
+    fi
 fi
 
 open_target "$selection" "$target"
