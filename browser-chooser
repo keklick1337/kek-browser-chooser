@@ -221,7 +221,33 @@ open_target() {
 # --- main ---
 
 target="${1:-}"
-[[ -z "$target" ]] && exit 0
+
+# If no arguments, just launch the browser selector and open browser without URL
+if [[ -z "$target" ]]; then
+    selection=$(choose_browser_profile)
+    if [[ -z "$selection" ]]; then
+        exit 0
+    fi
+    
+    IFS='|' read -r browser_type profile browser_cmd <<< "$selection"
+    
+    if [[ "$browser_type" == "firefox" ]]; then
+        if [[ -n "$profile" ]]; then
+            exec "$browser_cmd" -P "$profile"
+        else
+            exec "$browser_cmd"
+        fi
+    elif [[ "$browser_type" == "chrome" || "$browser_type" == "chromium" ]]; then
+        if [[ -n "$profile" ]]; then
+            exec "$browser_cmd" --profile-directory="$profile"
+        else
+            exec "$browser_cmd"
+        fi
+    else
+        exec "$browser_cmd"
+    fi
+    exit 0
+fi
 
 selection=$(choose_browser_profile)
 if [[ -z "$selection" ]]; then
