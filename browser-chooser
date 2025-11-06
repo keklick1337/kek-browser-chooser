@@ -125,9 +125,15 @@ choose_browser_profile() {
     local options=()
     
     # Firefox profiles
-    if command -v firefox &>/dev/null || command -v firefox-esr &>/dev/null; then
+    if command -v firefox &>/dev/null || command -v firefox-esr &>/dev/null || command -v firefox-bin &>/dev/null; then
         local ff_cmd="firefox"
-        command -v firefox &>/dev/null || ff_cmd="firefox-esr"
+        if command -v firefox &>/dev/null; then
+            ff_cmd="firefox"
+        elif command -v firefox-esr &>/dev/null; then
+            ff_cmd="firefox-esr"
+        else
+            ff_cmd="firefox-bin"
+        fi
         
         local profiles
         mapfile -t profiles < <(get_firefox_profiles 2>/dev/null || true)
